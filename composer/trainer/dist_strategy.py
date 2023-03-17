@@ -140,7 +140,6 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
                                                                              apply_activation_checkpointing,
                                                                              checkpoint_wrapper)
     from torch.distributed.fsdp import FullyShardedDataParallel
-    from torch.distributed.fsdp.flatten_params_wrapper import FlattenParamsWrapper
 
     from composer.trainer.mosaic_fsdp import (MosaicFullyShardedDataParallel, backward_prefetch_map, get_cpu_offload,
                                               get_mixed_precision, sharding_map)
@@ -275,14 +274,14 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
             # If module has attribute `module._fsdp_wrap = ...`, always respect it
             # Otherwise wrap if root object `obj.fsdp_wrap_fn(module)` is true
             # Or if unwrapped params in module in greater than or equal to fsdp_config.min_params
-            def _auto_wrap_policy(module: torch.nn.Module, recurse: bool, unwrapped_params: int) -> bool:
+            def _auto_wrap_policy(module: torch.nn.Module, recurse: bool, nonwrapped_numel: int) -> bool:
                 if recurse:
                     return True
                 else:
                     if hasattr(module, '_fsdp_wrap'):
                         return bool(module._fsdp_wrap)
 
-                    is_large = unwrapped_params >= min_params
+                    is_large = nonwrapped_numel >= min_params
                     if hasattr(obj, 'fsdp_wrap_fn') and isinstance(obj.fsdp_wrap_fn, Callable):
                         return obj.fsdp_wrap_fn(module) or is_large
                     else:
@@ -325,7 +324,7 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
                 # If module has attribute `module._activation_checkpointing = ...`, always respect it
                 # Otherwise checkpoint if root object `obj.activation_checkpointing_fn(module)` is true
                 def _check_fn(module: torch.nn.Module) -> bool:
-                    if isinstance(module, (FullyShardedDataParallel, FlattenParamsWrapper)):
+                    if isinstance(module, FullyShardedDataParallel):
                         return False
                     if hasattr(module, '_activation_checkpointing'):
                         return bool(module._activation_checkpointing)
