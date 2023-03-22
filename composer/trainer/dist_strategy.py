@@ -352,6 +352,7 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
         print(f'FSDP: Using mixed_precision={mixed_precision}')
         print(f'FSDP: Using backward_prefetch={backward_prefetch}')
         print(f'FSDP: Using min_params={min_params}')
+        print(f'FSDP: Using use_orig_params={use_orig_params}')
         print(f'FSDP: Using activation_checkpointing={activation_checkpointing}')
         print(f'FSDP: Using activation_cpu_offload={activation_cpu_offload}')
         print(f'FSDP: Using sync_module_states={sync_module_states}')
