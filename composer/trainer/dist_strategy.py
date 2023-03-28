@@ -17,7 +17,7 @@ from torchmetrics import Metric, MetricCollection
 from composer.core import Precision
 from composer.core.state import State
 from composer.trainer.meta_safe_apply import meta_safe_apply
-from composer.utils import StringEnum, dist, ensure_tuple
+from composer.utils import StringEnum, dist, ensure_tuple, using_torch_2_0
 
 __all__ = ['DDPSyncStrategy', 'ddp_sync_context', 'prepare_ddp_module', 'prepare_fsdp_module']
 
@@ -136,10 +136,13 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
     """
     if version.parse(torch.__version__) < version.parse('1.13.0'):
         raise RuntimeError('To use FSDP with Composer, you must use torch>=1.13.0.')
+    is_torch_2_0 = using_torch_2_0()
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (CheckpointImpl,
                                                                              apply_activation_checkpointing,
                                                                              checkpoint_wrapper)
     from torch.distributed.fsdp import FullyShardedDataParallel
+    if not is_torch_2_0:
+        from torch.distributed.fsdp.flatten_params_wrapper import FlattenParamsWrapper
 
     from composer.trainer.mosaic_fsdp import (MosaicFullyShardedDataParallel, backward_prefetch_map, get_cpu_offload,
                                               get_mixed_precision, sharding_map)
@@ -204,6 +207,10 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
     # to a FSDP-wrapped submodule's `forward()` function will be safe and all-gather the necessary weights before `forward()`.
     for obj_name, obj in model.named_children():
         if not isinstance(obj, (Metric, MetricCollection)):
+
+            # Skip wrapping submodules which are explicitly marked with no wrap
+            if hasattr(obj, '_fsdp_wrap') and not bool(obj._fsdp_wrap):
+                continue
 
             def _param_init_fn(module: torch.nn.Module) -> None:
                 # A dictionary of all tied parameter pointers to module names
@@ -275,7 +282,7 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
             # If module has attribute `module._fsdp_wrap = ...`, always respect it
             # Otherwise wrap if root object `obj.fsdp_wrap_fn(module)` is true
             # Or if unwrapped params in module in greater than or equal to fsdp_config.min_params
-            def _auto_wrap_policy(module: torch.nn.Module, recurse: bool, nonwrapped_numel: int) -> bool:
+            def __auto_wrap_policy(module: torch.nn.Module, recurse: bool, nonwrapped_numel: int) -> bool:
                 if recurse:
                     return True
                 else:
@@ -287,6 +294,20 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
                         return obj.fsdp_wrap_fn(module) or is_large
                     else:
                         return is_large
+
+            if is_torch_2_0:
+
+                def _auto_wrap_policy_new(module: torch.nn.Module, recurse: bool, nonwrapped_numel: int) -> bool:
+                    return __auto_wrap_policy(module, recurse, nonwrapped_numel)
+
+                _auto_wrap_policy = _auto_wrap_policy_new
+
+            else:
+
+                def _auto_wrap_policy_old(module: torch.nn.Module, recurse: bool, unwrapped_params: int) -> bool:
+                    return __auto_wrap_policy(module, recurse, unwrapped_params)
+
+                _auto_wrap_policy = _auto_wrap_policy_old
 
             fsdp_obj = MosaicFullyShardedDataParallel(
                 obj,
@@ -326,6 +347,8 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
                 # If module has attribute `module._activation_checkpointing = ...`, always respect it
                 # Otherwise checkpoint if root object `obj.activation_checkpointing_fn(module)` is true
                 def _check_fn(module: torch.nn.Module) -> bool:
+                    if not is_torch_2_0 and isinstance(module, FlattenParamsWrapper):
+                        return False
                     if isinstance(module, FullyShardedDataParallel):
                         return False
                     if hasattr(module, '_activation_checkpointing'):
