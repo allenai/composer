@@ -192,6 +192,7 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
     backward_prefetch = backward_prefetch_map[fsdp_config.get('backward_prefetch', 'BACKWARD_POST').upper()]
     min_params = int(float(fsdp_config.get('min_params', 1e9)))
     activation_checkpointing = fsdp_config.get('activation_checkpointing', False)
+    activation_checkpointing_preserve_rng_state = fsdp_config.get('activation_checkpointing_preserve_rng_state', True)
     activation_cpu_offload = fsdp_config.get('activation_cpu_offload', False)
     sync_module_states = fsdp_config.get('sync_module_states', False)
     forward_prefetch = fsdp_config.get('forward_prefetch', False)
@@ -328,20 +329,27 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
             # Activation Checkpointing
             if activation_checkpointing or activation_cpu_offload:
                 if not activation_checkpointing_reentrant:
-                    first_wrap_fn = lambda m: checkpoint_wrapper(m, checkpoint_impl=CheckpointImpl.NO_REENTRANT
-                                                                ) if activation_checkpointing else (lambda module:
-                                                                                                    module)
+                    first_wrap_fn = lambda m: checkpoint_wrapper(
+                        m,
+                        checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+                        preserve_rng_state=activation_checkpointing_preserve_rng_state
+                    ) if activation_checkpointing else (lambda module: module)
                     second_wrap_fn = (
                         lambda module: checkpoint_wrapper(
                             first_wrap_fn(module),  # type: ignore reportGeneralTypeIssues
                             checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-                            offload_to_cpu=True)) if activation_cpu_offload else first_wrap_fn
+                            offload_to_cpu=True)
+                    ) if activation_cpu_offload else first_wrap_fn
                 else:
-                    first_wrap_fn = checkpoint_wrapper if activation_checkpointing else (lambda module: module)
+                    first_wrap_fn = lambda m: checkpoint_wrapper(
+                        m,
+                        preserve_rng_state=activation_checkpointing_preserve_rng_state
+                    ) if activation_checkpointing else (lambda module: module)
                     second_wrap_fn = (
                         lambda module: checkpoint_wrapper(
                             first_wrap_fn(module),  # type: ignore reportGeneralTypeIssues
-                            offload_to_cpu=True)) if activation_cpu_offload else first_wrap_fn
+                            offload_to_cpu=True)
+                    ) if activation_cpu_offload else first_wrap_fn
 
                 # Choose which modules to activation checkpoint according to the following priority:
                 # If module has attribute `module._activation_checkpointing = ...`, always respect it
@@ -377,6 +385,7 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
         print(f'FSDP: Using min_params={min_params}')
         print(f'FSDP: Using use_orig_params={use_orig_params}')
         print(f'FSDP: Using activation_checkpointing={activation_checkpointing}')
+        print(f'FSDP: Using activation_checkpointing_preserve_rng_state={activation_checkpointing_preserve_rng_state}')
         print(f'FSDP: Using activation_cpu_offload={activation_cpu_offload}')
         print(f'FSDP: Using sync_module_states={sync_module_states}')
         print(f'FSDP: Using forward_prefetch={forward_prefetch}')
