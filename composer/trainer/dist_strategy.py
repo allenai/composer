@@ -7,6 +7,7 @@ import collections
 import logging
 import warnings
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from typing import Any, Callable, ContextManager, Dict, Optional, Sequence, Union, cast
 
 import torch
@@ -328,12 +329,17 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
 
             # Activation Checkpointing
             if activation_checkpointing or activation_cpu_offload:
+                from torch.utils.checkpoint import checkpoint as torch_utils_checkpoint
+                checkpoint_fn = partial(
+                    torch_utils_checkpoint,
+                    preserve_rng_state=activation_checkpointing_preserve_rng_state,
+                    use_reentrant=activation_checkpointing_reentrant
+                )
+                first_wrap_fn = lambda m: checkpoint_wrapper(
+                    m,
+                    checkpoint_fn=checkpoint_fn
+                ) if activation_checkpointing else (lambda module: module)
                 if not activation_checkpointing_reentrant:
-                    first_wrap_fn = lambda m: checkpoint_wrapper(
-                        m,
-                        checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-                        preserve_rng_state=activation_checkpointing_preserve_rng_state
-                    ) if activation_checkpointing else (lambda module: module)
                     second_wrap_fn = (
                         lambda module: checkpoint_wrapper(
                             first_wrap_fn(module),  # type: ignore reportGeneralTypeIssues
@@ -341,10 +347,6 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
                             offload_to_cpu=True)
                     ) if activation_cpu_offload else first_wrap_fn
                 else:
-                    first_wrap_fn = lambda m: checkpoint_wrapper(
-                        m,
-                        preserve_rng_state=activation_checkpointing_preserve_rng_state
-                    ) if activation_checkpointing else (lambda module: module)
                     second_wrap_fn = (
                         lambda module: checkpoint_wrapper(
                             first_wrap_fn(module),  # type: ignore reportGeneralTypeIssues
